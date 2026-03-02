@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
+import os
 import google.auth
 from dotenv import load_dotenv
 load_dotenv()
@@ -20,16 +20,16 @@ load_dotenv()
 from google.cloud import discoveryengine_v1
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StreamableHTTPConnectionParams
-from google.adk.tools import ToolContext, FunctionTool
+from google.adk.tools import FunctionTool
 from google.apps import chat_v1
 from google.oauth2.credentials import Credentials
 
 MODEL = "gemini-2.5-flash"
 
-# Client injects a bearer token into the ToolContext state.
-# The key pattern is "CLIENT_AUTH_NAME_<random_digits>".
-# We dynamically parse this token to authenticate our MCP and API calls.
-CLIENT_AUTH_NAME = "enterprise-ai"
+# Access token for authentication
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+if not ACCESS_TOKEN:
+    raise ValueError("ACCESS_TOKEN environment variable must be set")
 
 VERTEXAI_SEARCH_TIMEOUT = 15.0
 
@@ -51,25 +51,10 @@ def find_serving_config_path():
         return f"{engine.name}/servingConfigs/default_serving_config"
     raise Exception(f"No Discovery Engines found in project {project_id}")
 
-def _get_access_token_from_context(tool_context: ToolContext) -> str:
-    """Helper method to dynamically parse the intercepted bearer token from the context state."""
-    escaped_name = re.escape(CLIENT_AUTH_NAME)
-    pattern = re.compile(fr"^{escaped_name}_\d+$")
-    # Handle ADK varying state object types (Raw Dict vs ADK State)
-    state_dict = tool_context.state.to_dict() if hasattr(tool_context.state, 'to_dict') else tool_context.state
-    matching_keys = [k for k in state_dict.keys() if pattern.match(k)]
-    if matching_keys:
-        return state_dict.get(matching_keys[0])
-    raise Exception(f"No bearer token found in ToolContext state matching pattern {pattern.pattern}")
-
-def auth_header_provider(tool_context: ToolContext) -> dict[str, str]:
-    token = _get_access_token_from_context(tool_context)
-    return {"Authorization": f"Bearer {token}"}
-
-def send_direct_message(email: str, message: str, tool_context: ToolContext) -> dict:
+def send_direct_message(email: str, message: str) -> dict:
     """Sends a Google Chat Direct Message (DM) to a specific user by email address."""
     chat_client = chat_v1.ChatServiceClient(
-        credentials=Credentials(token=_get_access_token_from_context(tool_context))
+        credentials=Credentials(token=ACCESS_TOKEN)
     )
 
     # 1. Setup the DM space or find existing one
@@ -100,12 +85,10 @@ vertexai_mcp = McpToolset(
     connection_params=StreamableHTTPConnectionParams(
         url="https://discoveryengine.googleapis.com/mcp",
         timeout=VERTEXAI_SEARCH_TIMEOUT,
-        sse_read_timeout=VERTEXAI_SEARCH_TIMEOUT
+        sse_read_timeout=VERTEXAI_SEARCH_TIMEOUT,
+        headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
     ),
-    tool_filter=['search'],
-    # The auth_header_provider dynamically injects the bearer token from the ToolContext
-    # into the MCP call for authentication.
-    header_provider=auth_header_provider
+    tool_filter=['search']
 )
 
 # Answer nicely the following user queries:
