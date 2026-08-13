@@ -2,25 +2,25 @@
 
 **Note:** This project is part of the official Google Codelabs [Integrate Gemini Enterprise Agents with Google Workspace](https://codelabs.developers.google.com/ge-gws-agents) and [Integrate Vertex AI Agents with Google Workspace](https://codelabs.developers.google.com/vertexai-agents-gws).
 
-This sample contains a specialized Enterprise Agent built using the Google Agent Development Kit (ADK). This agent acts as an Enterprise AI Assistant by querying user's data corpus using the Vertex AI Search MCP toolset and sending Chat messages to DM spaces using a custom Function tool & Google Chat API.
+This sample contains a specialized Enterprise Agent built using the Google Agent Development Kit (ADK). This agent processes pending comments in given Google Docs and Google Sheets documents that are assigned to a specific user (by ID or email), reading and updating documents via Google Workspace MCPs and replying with an agent signature.
 
 ## Key Features
 
-1. **Dynamic Vertex AI Serving Configs:** 
-   The agent automatically discovers your project's `default_collection` engine and dynamically binds its queries to the `default_serving_config`.
+1. **Docs & Sheets Workspace MCPs:** 
+   The agent integrates directly with Google-managed Workspace MCP servers for Google Docs (`https://docsmcp.googleapis.com/mcp/v1`) and Google Sheets (`https://sheetsmcp.googleapis.com/mcp/v1`) to inspect and update document content.
    
-2. **Dynamic Authentication (`ToolContext`):** 
-   The client (e.g. Gemini Enterprise app, Google Workspace add on) passes an authentication token in the session state (e.g., `enterprise-ai_12345`). This agent intercepts the `ToolContext` state and extracts the token at runtime using regex pattern matching (`^enterprise-ai_\d+$`) to securely execute calls using a Bearer token.
+2. **Pending Comments Management:** 
+   Custom tools (`list_pending_comments`, `get_comment_details`, `reply_to_comment`) enable the agent to find unresolved comments assigned to a given user, gather comment context, and post responses with an automated agent signature (`🤖 *Processed by Enterprise AI Agent*`).
 
-3. **Graceful Timeouts:**
-   The `McpToolset` streaming components have been intentionally configured with an explicit 15-second `timeout` and `sse_read_timeout` to prevent the agent from hanging infinitely on backend network issues.
+3. **Dynamic Authentication (`ToolContext`):** 
+   The client (e.g. Gemini Enterprise app, Google Workspace add-on) passes an authentication token in the session state (e.g., `enterprise-ai_12345`). This agent intercepts the `ToolContext` state and extracts the token at runtime using regex pattern matching (`^enterprise-ai_\d+$`) to securely authenticate all MCP and REST API calls using Bearer tokens.
 
-4. **Google Chat Integration:**
-   The agent natively includes a `send_direct_message` tool powered by the `google-apps-chat` SDK. This allows the AI to immediately send direct messages to users inside Google Chat. It seamlessly reuses the same authentication token extracted from the `ToolContext` used for Vertex AI.
+4. **Graceful Timeouts:**
+   The `McpToolset` streaming components have been configured with an explicit 15-second `timeout` and `sse_read_timeout` to prevent the agent from hanging on network latency.
 
 ## Deployment
 
-This agent is designed exclusively to be deployed as a backend without any active auth. It **will not** work successfully if tested locally via standard ADK run commands because it relies entirely on an external gateway to inject OAuth tokens into the `ToolContext` at runtime.
+This agent is designed to be deployed as a backend service with dynamic token injection into the `ToolContext` at runtime.
 
 Deploy this agent directly to Vertex AI Agent Engines using the ADK CLI:
 
