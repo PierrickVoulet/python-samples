@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import re
+import logging
+from typing import Any
 import requests
 from dotenv import load_dotenv
 load_dotenv()
@@ -21,6 +23,9 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset, StreamableHTTPConnectionParams
 from google.adk.tools import ToolContext, FunctionTool
 from google.genai import types
+
+logger = logging.getLogger("enterprise_ai")
+logging.basicConfig(level=logging.INFO)
 
 MODEL = "gemini-2.5-flash"
 
@@ -56,6 +61,7 @@ def search_drive_file(query: str, tool_context: ToolContext) -> dict:
     Returns:
         A dictionary with the first matching file's ID, name, and MIME type, or an empty dictionary if not found.
     """
+    logger.info(f"[search_drive_file] Searching for: {query}")
     token = _get_access_token_from_context(tool_context)
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -72,7 +78,9 @@ def search_drive_file(query: str, tool_context: ToolContext) -> dict:
     response.raise_for_status()
     files = response.json().get("files", [])
     if files:
+        logger.info(f"[search_drive_file] Found file: {files[0]}")
         return files[0]
+    logger.info(f"[search_drive_file] No files found for: {query}")
     return {}
 
 def copy_drive_file(file_id: str, new_name: str | None = None, tool_context: ToolContext = None) -> dict:
@@ -86,6 +94,7 @@ def copy_drive_file(file_id: str, new_name: str | None = None, tool_context: Too
     Returns:
         A dictionary with the copied file's ID, name, and MIME type.
     """
+    logger.info(f"[copy_drive_file] Copying file_id={file_id} to new_name={new_name}")
     token = _get_access_token_from_context(tool_context)
     headers = {
         "Authorization": f"Bearer {token}",
@@ -97,7 +106,9 @@ def copy_drive_file(file_id: str, new_name: str | None = None, tool_context: Too
         body["name"] = new_name
     response = requests.post(url, headers=headers, json=body, params={"fields": "id, name, mimeType"})
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    logger.info(f"[copy_drive_file] Copy created successfully: {result}")
+    return result
 
 def rename_drive_file(file_id: str, new_name: str, tool_context: ToolContext) -> dict:
     """Renames an existing Google Drive file to a new title using Google Drive API v3.
@@ -110,6 +121,7 @@ def rename_drive_file(file_id: str, new_name: str, tool_context: ToolContext) ->
     Returns:
         A dictionary with the updated file's ID, name, and MIME type.
     """
+    logger.info(f"[rename_drive_file] Renaming file_id={file_id} to new_name={new_name}")
     token = _get_access_token_from_context(tool_context)
     headers = {
         "Authorization": f"Bearer {token}",
@@ -119,23 +131,26 @@ def rename_drive_file(file_id: str, new_name: str, tool_context: ToolContext) ->
     body = {"name": new_name}
     response = requests.patch(url, headers=headers, json=body, params={"fields": "id, name, mimeType"})
     response.raise_for_status()
-    return response.json()
+    result = response.json()
+    logger.info(f"[rename_drive_file] Rename completed: {result}")
+    return result
 
-def replace_spreadsheet_data(
+def replace_spreadsheet_rows(
     spreadsheet_id: str,
-    values: list[list[str]],
+    values: list[list[Any]],
     tool_context: ToolContext = None
 ) -> dict:
-    """Replaces the entire spreadsheet data with the provided 2D array of rows in a 100% deterministic way.
+    """Replaces all content in a Google Spreadsheet with the provided 2D array of rows in one atomic step.
 
     Args:
-        spreadsheet_id: The ID of the spreadsheet to modify.
+        spreadsheet_id: The ID of the spreadsheet to update.
         values: The complete 2D array of retained rows to write, starting with the Header row at values[0].
         tool_context: The ToolContext containing authentication state.
 
     Returns:
         A dictionary confirming the update and the number of rows written.
     """
+    logger.info(f"[replace_spreadsheet_rows] Updating spreadsheet {spreadsheet_id} with {len(values)} rows")
     token = _get_access_token_from_context(tool_context)
     headers = {
         "Authorization": f"Bearer {token}",
@@ -144,7 +159,7 @@ def replace_spreadsheet_data(
 
     # 1. Clear previous sheet data in bulk
     clear_url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchClear"
-    requests.post(clear_url, headers=headers, json={"ranges": ["A1:ZZ1000"]})
+    requests.post(clear_url, headers=headers, json={"ranges": ["A1:ZZ1000", "Sheet1!A1:ZZ1000"]})
 
     # 2. Write the retained rows directly starting at cell A1
     update_url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/A1"
@@ -152,18 +167,21 @@ def replace_spreadsheet_data(
     response = requests.put(update_url, headers=headers, params=params, json={"values": values})
     response.raise_for_status()
 
+    logger.info(f"[replace_spreadsheet_rows] Successfully wrote {len(values)} rows to {spreadsheet_id}")
     return {
         "status": "success",
+        "spreadsheet_id": spreadsheet_id,
         "rows_written": len(values)
     }
 
-# Google Workspace MCP Toolset for Google Sheets
+# Google Workspace MCP Toolset for Google Sheets restricted strictly to get_values
 sheets_mcp = McpToolset(
     connection_params=StreamableHTTPConnectionParams(
         url="https://sheetsmcp.googleapis.com/mcp/v1",
         timeout=WORKSPACE_MCP_TIMEOUT,
         sse_read_timeout=WORKSPACE_MCP_TIMEOUT,
     ),
+    tool_filter=["get_values"],
     header_provider=auth_header_provider,
 )
 
@@ -181,27 +199,27 @@ root_agent = LlmAgent(
     model=MODEL,
     name='enterprise_ai',
     generate_content_config=types.GenerateContentConfig(
-        temperature=0.0
+        temperature=0.0,
+        thinking_config=types.ThinkingConfig(thinking_budget=0)
     ),
     instruction="""
         You are an autonomous enterprise AI assistant that manages Google Drive files and Google Sheets spreadsheets.
 
-        CRITICAL EXECUTION RULES:
-        - When calling a tool, you MUST NOT generate any conversational text, narration, commentary, or thoughts in the same turn. Output ONLY the function call.
-        - Never stop or output conversational text after reading rows with `get_values`.
-        - YOU MUST IMMEDIATELY CALL `replace_spreadsheet_data` to physically apply the updates to the spreadsheet.
-        - Conversational text summaries are ONLY permitted in the turn AFTER `replace_spreadsheet_data` has successfully executed.
+        STRICT SILENCE PROTOCOL:
+        - When calling any tool, you are in automated backend mode. You MUST NOT generate any natural language text, preamble, thoughts, explanations, or status messages.
+        - Output ONLY the function_call.
+        - After retrieving rows with `get_values`, YOU MUST IMMEDIATELY CALL `replace_spreadsheet_rows` to apply the update.
+        - Exactly ONE natural language summary is permitted in the final turn AFTER `replace_spreadsheet_rows` has returned success.
 
         STEP-BY-STEP WORKFLOW:
 
         1. Locate & Copy Spreadsheet:
-           - Search for the source spreadsheet by title using `search_drive_file(query=...)`.
-           - When a copy is requested (e.g. "Create a copy of 'Our products' to 'Interesting products - XXX company'"), call `copy_drive_file(file_id=..., new_name="Interesting products - XXX company")`.
+           - Call `search_drive_file(query=...)` to find the source spreadsheet.
+           - If a copy was requested (e.g. "Create a copy of 'Our products' to 'Interesting products - XXX company'"), call `copy_drive_file(file_id=..., new_name="Interesting products - XXX company")`.
            - Always use the newly returned file `id` for subsequent inspection and update operations.
 
         2. Read Spreadsheet Content (Sheets MCP):
-           - Call `get_spreadsheet(spreadsheetId=...)` on the target file to inspect sheet metadata.
-           - Call `get_values(spreadsheetId=..., range="Sheet1!A1:Z500")` to read all existing rows.
+           - Call `get_values(spreadsheetId=..., range="A1:Z500")` to read all existing rows directly.
 
         3. In-Memory Filtering:
            Let `values` be the 2D array returned by `get_values`:
@@ -211,8 +229,8 @@ root_agent = LlmAgent(
            - Construct the list of retained rows: `retained_values = [values[0]] + [r for r in values[1:] if criteria_met]`.
 
         4. Deterministic Spreadsheet Update (Custom Tool):
-           - Call `replace_spreadsheet_data(spreadsheet_id="<target_id>", values=retained_values)`.
-           - This tool clears old data and writes the clean retained rows directly starting at cell A1.
+           - Call `replace_spreadsheet_rows(spreadsheet_id="<target_id>", values=retained_values)`.
+           - This tool clears previous data and writes the clean retained rows starting at cell A1 in one atomic step.
 
         5. Final Output:
            - Provide a concise summary:
@@ -227,6 +245,6 @@ root_agent = LlmAgent(
         FunctionTool(search_drive_file),
         FunctionTool(copy_drive_file),
         FunctionTool(rename_drive_file),
-        FunctionTool(replace_spreadsheet_data),
+        FunctionTool(replace_spreadsheet_rows),
     ]
 )
